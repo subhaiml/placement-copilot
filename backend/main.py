@@ -101,16 +101,20 @@ class SaveChatPayload(BaseModel):
     session_id: Optional[int] = None
 
 # AI Utility Helper
-async def call_gemini(prompt: str, model_name: str = "models/gemini-2.0-flash"):
+async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
     """
     Helper to call Gemini with specific error handling and fallback logic.
     """
     if not client:
         raise HTTPException(status_code=500, detail="Gemini API Client not configured.")
 
-    # Available stable models for high-speed analysis
-    # Order: Best -> Stable -> High Quota -> Power
-    models_to_try = [model_name, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]
+    # Multi-version fallback list to handle dynamic API endpoints (v1 vs v1beta)
+    # 1. Primary (2.0) -> 2. Standard 1.5 -> 3. High Quota / Versioned -> 4. Legacy
+    models_to_try = [
+        model_name, "gemini-2.0-flash", 
+        "gemini-1.5-flash-latest", "gemini-1.5-flash-001", "gemini-1.5-flash-002",
+        "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-pro"
+    ]
     
     # Remove duplicates but preserve order
     models_to_try = list(dict.fromkeys(models_to_try))
