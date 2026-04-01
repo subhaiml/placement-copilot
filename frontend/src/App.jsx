@@ -528,17 +528,10 @@ export default function App() {
         className="max-w-[1200px] mx-auto px-6 py-20 relative z-10 space-y-24"
       >
         {/* Header */}
-        <motion.header 
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, ease: "easeOut" }}
-          className="text-center space-y-6 pt-10"
-        >
+        <motion.header variants={itemVariants} className="text-center space-y-6 pt-10">
+
           <h1 className="text-6xl md:text-8xl font-black tracking-tighter text-white leading-[0.9]">
-            Placement <br />
-            <span className="text-transparent bg-clip-text bg-gradient-to-br from-blue-400 via-indigo-400 to-purple-600 underline decoration-white/10 underline-offset-8 decoration-4">
-              Copilot.
-            </span>
+            Placement <br /><span className="text-transparent bg-clip-text bg-gradient-to-br from-blue-400 via-indigo-400 to-purple-600 underline decoration-white/10 underline-offset-8 decoration-4">Copilot.</span>
           </h1>
           <p className="max-w-xl mx-auto text-lg text-slate-500 font-medium tracking-tight">
             Data-driven outcomes powered by neural analysis for the modern engineering career.
