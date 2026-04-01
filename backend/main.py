@@ -21,6 +21,7 @@ import models
 load_dotenv()
 
 # Configure Gemini
+api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
     print("WARNING: GEMINI_API_KEY not found in .env")
 else:
