@@ -197,11 +197,11 @@ export default function App() {
             const formData = new URLSearchParams();
             formData.append('username', email);
             formData.append('password', password);
-            const res = await axios.post('http://localhost:8000/login', formData);
+            const res = await axios.post(`${import.meta.env.VITE_API_URL}/login`, formData);
             setToken(res.data.access_token);
             setUserEmail(email);
         } else {
-            await axios.post('http://localhost:8000/register', { email, password });
+            await axios.post(`${import.meta.env.VITE_API_URL}/register`, { email, password });
             setAuthMode('login');
             setAuthError("Account created! Please login.");
         }
@@ -225,7 +225,7 @@ export default function App() {
     if (!token) return;
     setHistoryLoading(true);
     try {
-        const res = await axios.get('http://localhost:8000/my-history', {
+        const res = await axios.get(`${import.meta.env.VITE_API_URL}/my-history`, {
             headers: { Authorization: `Bearer ${token}` }
         });
         setHistory(res.data);
@@ -237,7 +237,7 @@ export default function App() {
     if (!token) return;
     setBatchHistoryLoading(true);
     try {
-        const res = await axios.get('http://localhost:8000/my-batch-reports', {
+        const res = await axios.get(`${import.meta.env.VITE_API_URL}/my-batch-reports`, {
             headers: { Authorization: `Bearer ${token}` }
         });
         setBatchHistory(res.data);
@@ -249,7 +249,7 @@ export default function App() {
     try {
       setLoadingState(true);
       setError(null);
-      const res = await axios.post(`http://localhost:8000/${endpoint}`, payload);
+      const res = await axios.post(`${import.meta.env.VITE_API_URL}/${endpoint}`, payload);
       setState(res.data);
     } catch (err) {
       console.error(err);
@@ -292,7 +292,7 @@ export default function App() {
     setLoading(true); setError(null); setAnalysis(null); setRoadmap(null); setSaveStatus(null);
     const fd = new FormData(); fd.append('file', file);
     try {
-      const res = await axios.post('http://localhost:8000/analyze-resume', fd);
+      const res = await axios.post(`${import.meta.env.VITE_API_URL}/analyze-resume`, fd);
       setAnalysis(res.data);
     } catch (err) { setError('Resume parsing failed.'); } 
     finally { setLoading(false); }
@@ -308,7 +308,7 @@ export default function App() {
     if (!token) return;
     setSaveStatus({ loading: true });
     try {
-      await axios.post('http://localhost:8000/save-roadmap', {
+      await axios.post(`${import.meta.env.VITE_API_URL}/save-roadmap`, {
         score: analysis.overall_score, strengths: analysis.strengths,
         missing_skills: analysis.missing_skills, roadmap_plan: roadmap
       }, {
@@ -328,13 +328,13 @@ export default function App() {
     setCurrentMessage('');
     setIsChatLoading(true);
     try {
-      const res = await axios.post('http://localhost:8000/mock-interview', { job_role: jobRole, history: prev, message: msg.text });
+      const res = await axios.post(`${import.meta.env.VITE_API_URL}/mock-interview`, { job_role: jobRole, history: prev, message: msg.text });
       const updatedHistory = [...prev, msg, { role: 'model', text: res.data.reply }];
       setChatHistory(updatedHistory);
       // Auto-save after each AI response
       if (token) {
         try {
-          const saveRes = await axios.post('http://localhost:8000/save-chat', {
+          const saveRes = await axios.post(`${import.meta.env.VITE_API_URL}/save-chat`, {
             job_role: jobRole,
             messages: updatedHistory,
             session_id: activeChatId || undefined
@@ -352,7 +352,7 @@ export default function App() {
     if (!token) return;
     setChatSessionsLoading(true);
     try {
-      const res = await axios.get('http://localhost:8000/my-chats', {
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/my-chats`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setChatSessions(res.data);
@@ -375,7 +375,7 @@ export default function App() {
 
   const deleteChatSession = async (sessionId) => {
     try {
-      await axios.delete(`http://localhost:8000/delete-chat/${sessionId}`, {
+      await axios.delete(`${import.meta.env.VITE_API_URL}/delete-chat/${sessionId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (activeChatId === sessionId) startNewChat();
@@ -392,7 +392,7 @@ export default function App() {
     const fd = new FormData();
     fd.append('file', batchFile);
     try {
-      const res = await axios.post('http://localhost:8000/batch-process', fd, {
+      const res = await axios.post(`${import.meta.env.VITE_API_URL}/batch-process`, fd, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setBatchData(res.data.results);
