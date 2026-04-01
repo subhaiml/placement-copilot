@@ -36,6 +36,22 @@ app = FastAPI()
 placement_model = joblib.load('placement_model.pkl')
 salary_model = joblib.load('salary_model.pkl')
 
+@app.on_event("startup")
+async def list_available_models():
+    """
+    Diagnostic to see exactly which model IDs are available for this API key.
+    """
+    if client:
+        try:
+            print("\n--- [AI DIAGNOSTIC] LISTING AVAILABLE MODELS ---")
+            # Iterate through the model list and print names
+            models = client.models.list()
+            for m in models:
+                print(f"Model ID: {m.name}")
+            print("--- [AI DIAGNOSTIC] END OF LIST ---\n")
+        except Exception as e:
+            print(f"AI Diagnostic Failed: {str(e)}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -109,11 +125,17 @@ async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
         raise HTTPException(status_code=500, detail="Gemini API Client not configured.")
 
     # Multi-version fallback list to handle dynamic API endpoints (v1 vs v1beta)
-    # 1. Primary (2.0) -> 2. Standard 1.5 -> 3. High Quota / Versioned -> 4. Legacy
+    # We include both "slug" and "models/" prefixed variants to be 100% sure.
     models_to_try = [
-        model_name, "gemini-2.0-flash", 
-        "gemini-1.5-flash-latest", "gemini-1.5-flash-001", "gemini-1.5-flash-002",
-        "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-pro"
+        model_name, 
+        "gemini-2.0-flash", "models/gemini-2.0-flash",
+        "gemini-1.5-flash-latest", "models/gemini-1.5-flash-latest",
+        "gemini-1.5-flash-001", "models/gemini-1.5-flash-001",
+        "gemini-1.5-flash-002", "models/gemini-1.5-flash-002",
+        "gemini-1.5-flash", "models/gemini-1.5-flash",
+        "gemini-1.5-flash-8b", "models/gemini-1.5-flash-8b",
+        "gemini-pro", "models/gemini-pro",
+        "gemini-1.0-pro", "models/gemini-1.0-pro"
     ]
     
     # Remove duplicates but preserve order
