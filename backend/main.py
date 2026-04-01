@@ -108,13 +108,9 @@ async def call_gemini(prompt: str, model_name: str = "models/gemini-2.0-flash"):
     if not client:
         raise HTTPException(status_code=500, detail="Gemini API Client not configured.")
 
-    # Ensure model names have the 'models/' prefix
-    def ensure_prefix(m):
-        return m if m.startswith("models/") else f"models/{m}"
-
-    primary_model = ensure_prefix(model_name)
     # Available stable models for high-speed analysis
-    models_to_try = [primary_model, "models/gemini-1.5-flash", "models/gemini-2.0-flash-lite-preview-02-05"]
+    # Order: Best -> Stable -> High Quota -> Power
+    models_to_try = [model_name, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]
     
     # Remove duplicates but preserve order
     models_to_try = list(dict.fromkeys(models_to_try))
@@ -135,10 +131,11 @@ async def call_gemini(prompt: str, model_name: str = "models/gemini-2.0-flash"):
         except Exception as e:
             last_error = str(e)
             # Log and try next if it's a quota or model-not-found error
-            if "429" in last_error or "quota" in last_error.lower() or "NOT_FOUND" in last_error or "404" in last_error:
-                print(f"AI Service Error with {model}: {last_error[:100]}... attempting fallback.")
+            err_str = last_error.lower()
+            if any(x in err_str for x in ["429", "quota", "404", "not_found", "not found"]):
+                print(f"AI Service Error with {model}: {last_error[:120]}... attempting fallback.")
                 continue
-            # Other errors break immediately
+            # Other errors (e.g. invalid arguments) break immediately to avoid wasting loops
             break
             
     # If we get here, all models failed or we hit a non-quota error
