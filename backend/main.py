@@ -101,7 +101,7 @@ class SaveChatPayload(BaseModel):
     session_id: Optional[int] = None
 
 # AI Utility Helper
-async def call_gemini(prompt: str, model_name: str = "models/gemini-2.5-flash"):
+async def call_gemini(prompt: str, model_name: str = "models/gemini-2.0-flash"):
     """
     Helper to call Gemini with specific error handling and fallback logic.
     """
@@ -113,7 +113,9 @@ async def call_gemini(prompt: str, model_name: str = "models/gemini-2.5-flash"):
         return m if m.startswith("models/") else f"models/{m}"
 
     primary_model = ensure_prefix(model_name)
-    models_to_try = [primary_model, "models/gemini-2.5-flash", "models/gemini-2.0-flash"]
+    # Available stable models for high-speed analysis
+    models_to_try = [primary_model, "models/gemini-1.5-flash", "models/gemini-2.0-flash-lite-preview-02-05"]
+    
     # Remove duplicates but preserve order
     models_to_try = list(dict.fromkeys(models_to_try))
 
@@ -132,9 +134,9 @@ async def call_gemini(prompt: str, model_name: str = "models/gemini-2.5-flash"):
             raise
         except Exception as e:
             last_error = str(e)
-            # If it's a quota or model-not-found error, try the next model
-            if "429" in last_error or "quota" in last_error.lower() or "NOT_FOUND" in last_error:
-                print(f"Error with {model}: {last_error[:80]}... trying next model.")
+            # Log and try next if it's a quota or model-not-found error
+            if "429" in last_error or "quota" in last_error.lower() or "NOT_FOUND" in last_error or "404" in last_error:
+                print(f"AI Service Error with {model}: {last_error[:100]}... attempting fallback.")
                 continue
             # Other errors break immediately
             break
@@ -184,6 +186,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 @app.post("/analyze-resume")
 async def analyze_resume(file: UploadFile = File(...)):
     try:
+        print(f"Incoming resume analysis request: {file.filename}")
         file_bytes = await file.read()
         extracted_text = ""
         
@@ -214,7 +217,9 @@ async def analyze_resume(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Resume analysis error: {str(e)}")
+        print(f"CRITICAL: Resume analysis failed for {file.filename}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Resume processing failed: {str(e)}")
 
 @app.post("/generate-roadmap")
