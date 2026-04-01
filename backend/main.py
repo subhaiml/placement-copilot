@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from google import genai
+import google.generativeai as genai
 import fitz
 from sqlalchemy.orm import Session
 import joblib
@@ -21,12 +21,10 @@ import models
 load_dotenv()
 
 # Configure Gemini
-api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
     print("WARNING: GEMINI_API_KEY not found in .env")
-    client = None
 else:
-    client = genai.Client(api_key=api_key)
+    genai.configure(api_key=api_key)
 
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
@@ -41,13 +39,12 @@ async def list_available_models():
     """
     Diagnostic to see exactly which model IDs are available for this API key.
     """
-    if client:
+    if api_key:
         try:
             print("\n--- [AI DIAGNOSTIC] LISTING AVAILABLE MODELS ---")
-            # Iterate through the model list and print names
-            models = client.models.list()
-            for m in models:
-                print(f"Model ID: {m.name}")
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    print(f"Model ID: {m.name}")
             print("--- [AI DIAGNOSTIC] END OF LIST ---\n")
         except Exception as e:
             print(f"AI Diagnostic Failed: {str(e)}")
@@ -117,38 +114,29 @@ class SaveChatPayload(BaseModel):
     session_id: Optional[int] = None
 
 # AI Utility Helper
-async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
+async def call_gemini(prompt: str, model_name: str = "gemini-1.5-flash"):
     """
-    Helper to call Gemini with specific error handling and fallback logic.
+    Helper to call Gemini using the stable google-generativeai library.
     """
-    if not client:
-        raise HTTPException(status_code=500, detail="Gemini API Client not configured.")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Gemini API Key not configured.")
 
-    # Multi-version fallback list to handle dynamic API endpoints (v1 vs v1beta)
-    # We include both "slug" and "models/" prefixed variants to be 100% sure.
+    # List of models to try in case of 429 (Quota)
     models_to_try = [
-        model_name, 
-        "gemini-2.0-flash", "models/gemini-2.0-flash",
-        "gemini-1.5-flash-latest", "models/gemini-1.5-flash-latest",
-        "gemini-1.5-flash-001", "models/gemini-1.5-flash-001",
-        "gemini-1.5-flash-002", "models/gemini-1.5-flash-002",
-        "gemini-1.5-flash", "models/gemini-1.5-flash",
-        "gemini-1.5-flash-8b", "models/gemini-1.5-flash-8b",
-        "gemini-pro", "models/gemini-pro",
-        "gemini-1.0-pro", "models/gemini-1.0-pro"
+        model_name, "gemini-1.5-flash", "gemini-1.5-flash-8b", 
+        "gemini-2.0-flash-exp", "gemini-1.0-pro"
     ]
     
     # Remove duplicates but preserve order
     models_to_try = list(dict.fromkeys(models_to_try))
 
     last_error = None
-    for model in models_to_try:
+    for model_id in models_to_try:
         try:
-            # Use natively async client.aio
-            response = await client.aio.models.generate_content(
-                model=model,
-                contents=prompt
-            )
+            model = genai.GenerativeModel(model_id)
+            # Use async version of generate_content
+            response = await model.generate_content_async(prompt)
+            
             if not response or not response.text:
                 raise ValueError("Empty response from AI")
             return response.text.strip()
@@ -156,19 +144,17 @@ async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
             raise
         except Exception as e:
             last_error = str(e)
-            # Log and try next if it's a quota or model-not-found error
             err_str = last_error.lower()
-            if any(x in err_str for x in ["429", "quota", "404", "not_found", "not found"]):
-                print(f"AI Service Error with {model}: {last_error[:120]}... attempting fallback.")
+            # If it's a quota (429) or not-found (404) error, try the next model
+            if any(x in err_str for x in ["429", "quota", "404", "not found", "invalid"]):
+                print(f"AI Service Error with {model_id}: {last_error[:120]}... attempting fallback.")
                 continue
-            # Other errors (e.g. invalid arguments) break immediately to avoid wasting loops
             break
             
-    # If we get here, all models failed or we hit a non-quota error
     if "429" in (last_error or ""):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="AI Service is currently over capacity or has exceeded limit. Please try again in 60 seconds."
+            detail="AI Service is currently over capacity. Please try again in 60 seconds."
         )
     raise HTTPException(status_code=500, detail=f"AI Analysis failed: {last_error}")
 
