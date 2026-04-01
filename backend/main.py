@@ -115,17 +115,23 @@ class SaveChatPayload(BaseModel):
     session_id: Optional[int] = None
 
 # AI Utility Helper
-async def call_gemini(prompt: str, model_name: str = "gemini-1.5-flash"):
+async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
     """
     Helper to call Gemini using the stable google-generativeai library.
     """
     if not api_key:
         raise HTTPException(status_code=500, detail="Gemini API Key not configured.")
 
-    # List of models to try in case of 429 (Quota)
+    # Multi-version fallback list to handle dynamic API endpoints (v1 vs v1beta)
+    # We include both "slug" and "models/" prefixed variants to be 100% sure.
+    # Order: Best -> Stable -> High Quota -> Legacy
     models_to_try = [
-        model_name, "gemini-1.5-flash", "gemini-1.5-flash-8b", 
-        "gemini-2.0-flash-exp", "gemini-1.0-pro"
+        model_name, "models/gemini-2.0-flash", 
+        "gemini-1.5-flash-latest", "models/gemini-1.5-flash-latest",
+        "gemini-1.5-flash", "models/gemini-1.5-flash",
+        "gemini-1.5-flash-8b", "models/gemini-1.5-flash-8b",
+        "gemini-pro", "models/gemini-pro",
+        "gemini-1.0-pro", "models/gemini-1.0-pro"
     ]
     
     # Remove duplicates but preserve order
