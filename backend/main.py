@@ -25,7 +25,8 @@ api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
     print("WARNING: GEMINI_API_KEY not found in .env")
 else:
-    genai.configure(api_key=api_key)
+    # Explicitly move to 'rest' transport as gRPC can have resolution issues on Render
+    genai.configure(api_key=api_key, transport='rest')
 
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
@@ -36,19 +37,42 @@ placement_model = joblib.load('placement_model.pkl')
 salary_model = joblib.load('salary_model.pkl')
 
 @app.on_event("startup")
-async def list_available_models():
+async def ai_health_check():
     """
-    Diagnostic to see exactly which model IDs are available for this API key.
+    Ping every model in our fallback list on startup to see which are actually
+    found (not 404) and which have quota (not 429).
     """
     if api_key:
-        try:
-            print("\n--- [AI DIAGNOSTIC] LISTING AVAILABLE MODELS ---")
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    print(f"Model ID: {m.name}")
-            print("--- [AI DIAGNOSTIC] END OF LIST ---\n")
-        except Exception as e:
-            print(f"AI Diagnostic Failed: {str(e)}")
+        print("\n--- [AI HEALTH CHECK] INITIALIZING ---")
+        # All candidate models to test
+        candidates = [
+            "gemini-2.0-flash", "models/gemini-2.0-flash",
+            "gemini-1.5-flash-latest", "models/gemini-1.5-flash-latest",
+            "gemini-1.5-flash-001", "models/gemini-1.5-flash-001",
+            "gemini-1.5-flash-002", "models/gemini-1.5-flash-002",
+            "gemini-1.5-flash", "models/gemini-1.5-flash",
+            "gemini-1.5-flash-8b", "models/gemini-1.5-flash-8b",
+            "gemini-pro", "models/gemini-pro"
+        ]
+        
+        for model_id in candidates:
+            try:
+                model = genai.GenerativeModel(model_id)
+                # Attempt a fast 1-word generation
+                response = await model.generate_content_async("Hi")
+                print(f"Model ID: {model_id} -> [SUCCESS]")
+            except Exception as e:
+                err_str = str(e).lower()
+                status = "UNKNOWN"
+                if "429" in err_str or "quota" in err_str:
+                    status = "QUOTA_EXHAUSTED (429)"
+                elif "404" in err_str or "not found" in err_str:
+                    status = "NOT_FOUND (404)"
+                elif "403" in err_str:
+                    status = "PERMISSION_DENIED (403)"
+                print(f"Model ID: {model_id} -> [{status}] - {str(e)[:50]}...")
+        
+        print("--- [AI HEALTH CHECK] COMPLETED ---\n")
 
 app.add_middleware(
     CORSMiddleware,
@@ -122,12 +146,13 @@ async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
     if not api_key:
         raise HTTPException(status_code=500, detail="Gemini API Key not configured.")
 
-    # Multi-version fallback list to handle dynamic API endpoints (v1 vs v1beta)
-    # We include both "slug" and "models/" prefixed variants to be 100% sure.
-    # Order: Best -> Stable -> High Quota -> Legacy
+    # Multi-version shotgun fallback list with BOTH slug and models/ prefix.
+    # Trying specific versioned aliases which are often the most stable on REST endpoints.
     models_to_try = [
         model_name, "models/gemini-2.0-flash", 
         "gemini-1.5-flash-latest", "models/gemini-1.5-flash-latest",
+        "gemini-1.5-flash-001", "models/gemini-1.5-flash-001",
+        "gemini-1.5-flash-002", "models/gemini-1.5-flash-002",
         "gemini-1.5-flash", "models/gemini-1.5-flash",
         "gemini-1.5-flash-8b", "models/gemini-1.5-flash-8b",
         "gemini-pro", "models/gemini-pro",
