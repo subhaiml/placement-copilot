@@ -5,7 +5,8 @@ from passlib.context import CryptContext
 
 # Security Configuration
 import os
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-it")  # In production, use environment variable
+# IMPORTANT: Set this in your Render environment variables to stay logged in across redeploys!
+SECRET_KEY = os.getenv("SECRET_KEY", "PlacementCopilotSecureSessionToken1234567890")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

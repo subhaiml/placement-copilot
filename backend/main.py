@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-import google.generativeai as genai
+from google import genai
 import fitz
 from sqlalchemy.orm import Session
 import joblib
@@ -24,9 +24,12 @@ load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
     print("WARNING: GEMINI_API_KEY not found in .env")
+    client_v1 = None
+    client_v1beta = None
 else:
-    # Explicitly move to 'rest' transport as gRPC can have resolution issues on Render
-    genai.configure(api_key=api_key, transport='rest')
+    # We use two clients because stable models (1.5) are on v1, while experimental (2.0) are on v1beta.
+    client_v1 = genai.Client(api_key=api_key, http_options={'api_version': 'v1'})
+    client_v1beta = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
 
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
@@ -39,39 +42,31 @@ salary_model = joblib.load('salary_model.pkl')
 @app.on_event("startup")
 async def ai_health_check():
     """
-    Ping every model in our fallback list on startup to see which are actually
-    found (not 404) and which have quota (not 429).
+    Diagnostic to see if models are available on v1 (Stable) or v1beta (Experimental).
     """
-    if api_key:
+    if api_key and client_v1:
         print("\n--- [AI HEALTH CHECK] INITIALIZING ---")
-        # All candidate models to test
-        candidates = [
-            "gemini-2.0-flash", "models/gemini-2.0-flash",
-            "gemini-1.5-flash-latest", "models/gemini-1.5-flash-latest",
-            "gemini-1.5-flash-001", "models/gemini-1.5-flash-001",
-            "gemini-1.5-flash-002", "models/gemini-1.5-flash-002",
-            "gemini-1.5-flash", "models/gemini-1.5-flash",
-            "gemini-1.5-flash-8b", "models/gemini-1.5-flash-8b",
-            "gemini-pro", "models/gemini-pro"
-        ]
         
-        for model_id in candidates:
+        # Test v1 (Stable)
+        for m_id in ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]:
             try:
-                model = genai.GenerativeModel(model_id)
-                # Attempt a fast 1-word generation
-                response = await model.generate_content_async("Hi")
-                print(f"Model ID: {model_id} -> [SUCCESS]")
+                await client_v1.aio.models.generate_content(model=m_id, contents="Hi")
+                print(f"API v1 -> {m_id}: [SUCCESS]")
             except Exception as e:
-                err_str = str(e).lower()
-                status = "UNKNOWN"
-                if "429" in err_str or "quota" in err_str:
-                    status = "QUOTA_EXHAUSTED (429)"
-                elif "404" in err_str or "not found" in err_str:
-                    status = "NOT_FOUND (404)"
-                elif "403" in err_str:
-                    status = "PERMISSION_DENIED (403)"
-                print(f"Model ID: {model_id} -> [{status}] - {str(e)[:50]}...")
-        
+                err = str(e).lower()
+                status = "429_QUOTA" if "429" in err else "404_NOT_FOUND" if "404" in err else "ERROR"
+                print(f"API v1 -> {m_id}: [{status}]")
+
+        # Test v1beta (Experimental)
+        for m_id in ["gemini-2.0-flash", "gemini-2.0-flash-exp"]:
+            try:
+                await client_v1beta.aio.models.generate_content(model=m_id, contents="Hi")
+                print(f"API v1beta -> {m_id}: [SUCCESS]")
+            except Exception as e:
+                err = str(e).lower()
+                status = "429_QUOTA" if "429" in err else "404_NOT_FOUND" if "404" in err else "ERROR"
+                print(f"API v1beta -> {m_id}: [{status}]")
+                
         print("--- [AI HEALTH CHECK] COMPLETED ---\n")
 
 app.add_middleware(
@@ -139,55 +134,39 @@ class SaveChatPayload(BaseModel):
     session_id: Optional[int] = None
 
 # AI Utility Helper
-async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
+async def call_gemini(prompt: str, model_name: str = "gemini-1.5-flash"):
     """
-    Helper to call Gemini using the stable google-generativeai library.
+    Helper to call Gemini using the modern google-genai library with dual-version fallback.
     """
-    if not api_key:
-        raise HTTPException(status_code=500, detail="Gemini API Key not configured.")
+    if not client_v1 or not client_v1beta:
+        raise HTTPException(status_code=500, detail="Gemini API Clients not initialized.")
 
-    # Multi-version shotgun fallback list with BOTH slug and models/ prefix.
-    # Trying specific versioned aliases which are often the most stable on REST endpoints.
-    models_to_try = [
-        model_name, "models/gemini-2.0-flash", 
-        "gemini-1.5-flash-latest", "models/gemini-1.5-flash-latest",
-        "gemini-1.5-flash-001", "models/gemini-1.5-flash-001",
-        "gemini-1.5-flash-002", "models/gemini-1.5-flash-002",
-        "gemini-1.5-flash", "models/gemini-1.5-flash",
-        "gemini-1.5-flash-8b", "models/gemini-1.5-flash-8b",
-        "gemini-pro", "models/gemini-pro",
-        "gemini-1.0-pro", "models/gemini-1.0-pro"
+    # Prioritize Stable (v1) -> High Quota (v1) -> Experimental (v1beta)
+    attempts = [
+        (client_v1, "gemini-1.5-flash"),
+        (client_v1, "gemini-1.5-flash-8b"),
+        (client_v1, "gemini-1.5-pro"),
+        (client_v1beta, "gemini-2.0-flash"),
+        (client_v1beta, "gemini-2.0-flash-exp")
     ]
-    
-    # Remove duplicates but preserve order
-    models_to_try = list(dict.fromkeys(models_to_try))
 
     last_error = None
-    for model_id in models_to_try:
+    for client, m_id in attempts:
         try:
-            model = genai.GenerativeModel(model_id)
-            # Use async version of generate_content
-            response = await model.generate_content_async(prompt)
-            
+            response = await client.aio.models.generate_content(model=m_id, contents=prompt)
             if not response or not response.text:
                 raise ValueError("Empty response from AI")
             return response.text.strip()
-        except HTTPException:
-            raise
         except Exception as e:
             last_error = str(e)
-            err_str = last_error.lower()
-            # If it's a quota (429) or not-found (404) error, try the next model
-            if any(x in err_str for x in ["429", "quota", "404", "not found", "invalid"]):
-                print(f"AI Service Error with {model_id}: {last_error[:120]}... attempting fallback.")
+            # Continue if it's a 429/404/Quota issue
+            if any(x in last_error.lower() for x in ["429", "404", "quota", "not found"]):
+                print(f"AI Service Error (Attempting next): {m_id} -> {last_error[:80]}")
                 continue
-            break
+            break # Stop on critical errors (like invalid prompt)
             
     if "429" in (last_error or ""):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="AI Service is currently over capacity. Please try again in 60 seconds."
-        )
+        raise HTTPException(status_code=429, detail="All AI models are currently over capacity. Please try again in 60 seconds.")
     raise HTTPException(status_code=500, detail=f"AI Analysis failed: {last_error}")
 
 # Endpoints
