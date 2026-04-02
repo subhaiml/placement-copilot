@@ -636,8 +636,19 @@ export default function App() {
                     <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Neural Score</span>
                     <span className="text-4xl font-black text-white">{analysis.overall_score}<span className="text-lg text-slate-600">/10</span></span>
                   </div>
-                  <button onClick={handleGenerateRoadmap} className="w-full h-12 bg-white/[0.05] text-white font-bold rounded-xl text-xs uppercase tracking-widest hover:bg-white/[0.08]">
-                    Sync Roadmap
+                  <button 
+                    onClick={handleGenerateRoadmap} 
+                    disabled={roadmapLoading}
+                    className="w-full h-12 bg-white/[0.05] text-white font-bold rounded-xl text-xs uppercase tracking-widest hover:bg-white/[0.08] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {roadmapLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Generating Roadmap...
+                      </>
+                    ) : (
+                      "Sync Roadmap"
+                    )}
                   </button>
                 </div>
               )}

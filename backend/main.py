@@ -445,6 +445,7 @@ def delete_chat(
 @app.post("/batch-process")
 async def batch_process(
     file: UploadFile = File(...),
+    db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     try:
