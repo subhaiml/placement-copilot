@@ -634,7 +634,7 @@ export default function App() {
                 <div className="mt-10 pt-10 border-t border-white/[0.05] space-y-6">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Neural Score</span>
-                    <span className="text-4xl font-black text-white">{analysis.overall_score}<span className="text-lg text-slate-600">/10</span></span>
+                    <span className="text-4xl font-black text-white">{analysis.overall_score}<span className="text-lg text-slate-600">/100</span></span>
                   </div>
                   <button 
                     onClick={handleGenerateRoadmap} 
@@ -910,6 +910,34 @@ export default function App() {
                     {batchError}
                   </div>
                 )}
+
+                {/* Batch History */}
+                <div className="pt-4 border-t border-white/[0.05]">
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-4">Past Reports</span>
+                  <div className="space-y-2 max-h-60 overflow-y-auto custom-scrollbar pr-1">
+                    {batchHistoryLoading ? (
+                      <div className="flex justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-amber-500/50" /></div>
+                    ) : batchHistory.length === 0 ? (
+                      <p className="text-[10px] text-slate-600 text-center py-2 font-bold uppercase tracking-widest">No reports yet</p>
+                    ) : batchHistory.map((b) => (
+                      <motion.div
+                        key={b.id}
+                        onClick={() => { setBatchData(b.results); setBatchFile({ name: b.filename }); }}
+                        whileHover={{ scale: 1.01 }}
+                        className="bg-white/[0.02] border border-white/[0.06] p-3.5 rounded-xl flex items-center justify-between group cursor-pointer hover:bg-amber-500/5 hover:border-amber-500/20 transition-all"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <History className="w-3 h-3 text-amber-400/60 shrink-0" />
+                            <p className="text-[11px] font-bold text-white/80 truncate">{b.filename}</p>
+                          </div>
+                          <p className="text-[10px] text-slate-600 mt-1">{b.results?.length || 0} students · {b.created_at ? new Date(b.created_at).toLocaleDateString() : ''}</p>
+                        </div>
+                        <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-amber-400 transition-all shrink-0" />
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               {/* Results Panel */}

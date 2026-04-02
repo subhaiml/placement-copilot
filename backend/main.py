@@ -250,12 +250,16 @@ async def analyze_resume(file: UploadFile = File(...)):
         if not extracted_text.strip():
             raise ValueError("No text could be extracted from the file.")
 
-        prompt = f'Analyze this resume text and return ONLY a JSON object with: "strengths", "missing_skills", "overall_score". {extracted_text}'
+        prompt = f'Analyze this resume text and return ONLY a JSON object with: "strengths" (array of strings), "missing_skills" (array of strings), "overall_score" (integer from 0 to 100, representing the resume quality percentage). {extracted_text}'
         ai_response = await call_gemini(prompt)
         
         cleaned_text = ai_response.replace('```json', '').replace('```', '').strip()
         try:
-            return json.loads(cleaned_text)
+            result = json.loads(cleaned_text)
+            # Clamp score to 0-100
+            raw_score = int(result.get("overall_score", 70))
+            result["overall_score"] = max(0, min(100, raw_score))
+            return result
         except json.JSONDecodeError:
             return {
                 "strengths": ["Analysis completed"],
