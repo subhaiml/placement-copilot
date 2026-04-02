@@ -25,11 +25,8 @@ load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
     print("WARNING: GEMINI_API_KEY not found in .env")
-    client_v1 = None
     client_v1beta = None
 else:
-    # We use two clients because stable models (1.5) are on v1, while experimental (2.0) are on v1beta.
-    client_v1 = genai.Client(api_key=api_key, http_options={'api_version': 'v1'})
     client_v1beta = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
 
 # Configure Groq (fallback for rate-limited Gemini calls)
@@ -51,31 +48,26 @@ salary_model = joblib.load('salary_model.pkl')
 @app.on_event("startup")
 async def ai_health_check():
     """
-    Diagnostic to see if models are available on v1 (Stable) or v1beta (Experimental).
+    Diagnostic to see which models are reachable.
     """
-    if api_key and client_v1:
+    if api_key and client_v1beta:
         print("\n--- [AI HEALTH CHECK] INITIALIZING ---")
-        
-        # Test v1 (Stable)
-        for m_id in ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]:
-            try:
-                await client_v1.aio.models.generate_content(model=m_id, contents="Hi")
-                print(f"API v1 -> {m_id}: [SUCCESS]")
-            except Exception as e:
-                err = str(e).lower()
-                status = "429_QUOTA" if "429" in err else "404_NOT_FOUND" if "404" in err else "ERROR"
-                print(f"API v1 -> {m_id}: [{status}]")
-
-        # Test v1beta (Experimental)
-        for m_id in ["gemini-2.0-flash", "gemini-2.0-flash-exp"]:
+        for m_id in ["gemini-2.0-flash", "gemini-2.5-flash"]:
             try:
                 await client_v1beta.aio.models.generate_content(model=m_id, contents="Hi")
-                print(f"API v1beta -> {m_id}: [SUCCESS]")
+                print(f"Gemini -> {m_id}: [SUCCESS]")
             except Exception as e:
                 err = str(e).lower()
-                status = "429_QUOTA" if "429" in err else "404_NOT_FOUND" if "404" in err else "ERROR"
-                print(f"API v1beta -> {m_id}: [{status}]")
-                
+                tag = "429_QUOTA" if "429" in err else "404_NOT_FOUND" if "404" in err else "ERROR"
+                print(f"Gemini -> {m_id}: [{tag}]")
+        if groq_client:
+            try:
+                groq_client.chat.completions.create(model="llama3-8b-8192", messages=[{"role": "user", "content": "Hi"}], max_tokens=5)
+                print(f"Groq  -> llama3-8b-8192: [SUCCESS]")
+            except Exception as e:
+                print(f"Groq  -> llama3-8b-8192: [ERROR] {str(e)[:80]}")
+        else:
+            print("Groq  -> [NOT CONFIGURED]")
         print("--- [AI HEALTH CHECK] COMPLETED ---\n")
 
 app.add_middleware(
@@ -143,23 +135,22 @@ class SaveChatPayload(BaseModel):
     session_id: Optional[int] = None
 
 # AI Utility Helper
-async def call_gemini(prompt: str, model_name: str = "gemini-1.5-flash"):
+async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
     """
-    Helper to call Gemini using the modern google-genai library with dual-version fallback.
+    Try Gemini models first.  If all are 404/429, fall back to Groq.
     """
-    if not client_v1 or not client_v1beta:
-        raise HTTPException(status_code=500, detail="Gemini API Clients not initialized.")
+    if not client_v1beta:
+        # Skip straight to Groq if Gemini isn't configured
+        return await _call_groq_fallback(prompt)
 
-    # Prioritize Stable (v1) -> High Quota (v1) -> Experimental (v1beta)
+    # Only list models that actually exist (the 1.5 series was sunset)
     attempts = [
-        (client_v1, "gemini-1.5-flash"),
-        (client_v1, "gemini-1.5-flash-8b"),
-        (client_v1, "gemini-1.5-pro"),
         (client_v1beta, "gemini-2.0-flash"),
-        (client_v1beta, "gemini-2.0-flash-exp")
+        (client_v1beta, "gemini-2.5-flash"),
     ]
 
     last_error = None
+    saw_429 = False
     for client, m_id in attempts:
         try:
             response = await client.aio.models.generate_content(model=m_id, contents=prompt)
@@ -168,15 +159,43 @@ async def call_gemini(prompt: str, model_name: str = "gemini-1.5-flash"):
             return response.text.strip()
         except Exception as e:
             last_error = str(e)
-            # Continue if it's a 429/404/Quota issue
-            if any(x in last_error.lower() for x in ["429", "404", "quota", "not found"]):
-                print(f"AI Service Error (Attempting next): {m_id} -> {last_error[:80]}")
+            err_lower = last_error.lower()
+            if "429" in err_lower or "quota" in err_lower or "resourceexhausted" in err_lower:
+                saw_429 = True
+                print(f"Gemini 429/Quota ({m_id}): {last_error[:80]}")
                 continue
-            break # Stop on critical errors (like invalid prompt)
-            
-    if "429" in (last_error or ""):
-        raise HTTPException(status_code=429, detail="All AI models are currently over capacity. Please try again in 60 seconds.")
-    raise HTTPException(status_code=500, detail=f"AI Analysis failed: {last_error}")
+            if "404" in err_lower or "not found" in err_lower:
+                print(f"Gemini 404 ({m_id}): {last_error[:80]}")
+                continue
+            # Critical error (bad prompt, auth, etc.) — stop trying Gemini
+            break
+
+    # ── Groq fallback ──
+    print(f"All Gemini models exhausted (saw_429={saw_429}). Falling back to Groq.")
+    return await _call_groq_fallback(prompt)
+
+
+async def _call_groq_fallback(prompt: str) -> str:
+    """Call Groq llama3-8b-8192 as a fallback when Gemini is unavailable."""
+    if not groq_client:
+        raise HTTPException(
+            status_code=429,
+            detail="All AI models are over capacity and Groq fallback is not configured. Please try again later."
+        )
+    try:
+        groq_response = groq_client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = groq_response.choices[0].message.content
+        if not text:
+            raise ValueError("Empty response from Groq")
+        return text.strip()
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Groq fallback error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI Analysis failed (Groq fallback): {str(e)}")
 
 # Endpoints
 @app.get("/")
@@ -329,41 +348,14 @@ async def mock_interview(payload: InterviewPayload):
 
     prompt = f"{system_prompt}\n\nConversation so far:\n{history_text}\nCandidate: {payload.message}\n\nPriya:"
 
-    # --- Primary: Gemini ---
     try:
         ai_response = await call_gemini(prompt)
         return {"reply": ai_response}
-    except HTTPException as he:
-        # Only fall back to Groq on 429 (rate-limit / resource exhausted)
-        if he.status_code != 429:
-            raise
-        print("Gemini 429 — falling back to Groq llama3-8b-8192")
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Mock interview Gemini error: {str(e)}")
-        # If the error looks like a rate-limit, try Groq; otherwise re-raise
-        if "429" not in str(e) and "ResourceExhausted" not in str(e):
-            raise HTTPException(status_code=500, detail=f"Interviewer unavailable: {str(e)}")
-        print("Gemini ResourceExhausted — falling back to Groq llama3-8b-8192")
-
-    # --- Fallback: Groq ---
-    if not groq_client:
-        raise HTTPException(
-            status_code=429,
-            detail="All AI models are over capacity and Groq fallback is not configured. Please try again later."
-        )
-
-    try:
-        groq_response = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return {"reply": groq_response.choices[0].message.content}
-    except Exception as e:
-        print(f"Groq fallback error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Interviewer unavailable (Groq fallback also failed): {str(e)}")
+        print(f"Mock interview error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Interviewer unavailable: {str(e)}")
 
 # ── Chat Session Endpoints ──
 
