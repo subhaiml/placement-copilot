@@ -276,11 +276,39 @@ async def analyze_resume(file: UploadFile = File(...)):
 
 @app.post("/generate-roadmap")
 async def generate_roadmap(payload: SkillsPayload):
-    prompt = f'Generate a 4-week roadmap for these missing skills: {payload.skills}. Return ONLY a JSON array of objects with "week", "focus", "action_items".'
-    ai_response = await call_gemini(prompt)
-    
-    cleaned_text = ai_response.replace('```json', '').replace('```', '').strip()
-    return json.loads(cleaned_text)
+    try:
+        prompt = f'Generate a 4-week roadmap for these missing skills: {payload.skills}. Return ONLY a valid JSON array of objects with "week", "focus", "action_items". No markdown, no explanation, just the raw JSON array.'
+        ai_response = await call_gemini(prompt)
+        
+        # Strip markdown fences
+        cleaned_text = ai_response.replace('```json', '').replace('```', '').strip()
+        
+        # Try direct parse first
+        try:
+            return json.loads(cleaned_text)
+        except json.JSONDecodeError:
+            pass
+        
+        # Try extracting a JSON array from the response using regex
+        import re
+        match = re.search(r'\[.*\]', cleaned_text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        
+        # Final fallback: return a generic roadmap
+        print(f"Roadmap JSON parse failed. Raw response: {cleaned_text[:200]}")
+        return [
+            {"week": f"Week {i+1}", "focus": skill, "action_items": [f"Study {skill} fundamentals", f"Build a mini-project using {skill}", "Review and practice"]}
+            for i, skill in enumerate(payload.skills[:4])
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Roadmap generation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Roadmap generation failed: {str(e)}")
 
 @app.post("/save-roadmap")
 def save_roadmap(
