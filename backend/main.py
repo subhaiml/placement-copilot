@@ -7,6 +7,7 @@ from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from google import genai
+from groq import Groq
 import fitz
 from sqlalchemy.orm import Session
 import joblib
@@ -30,6 +31,14 @@ else:
     # We use two clients because stable models (1.5) are on v1, while experimental (2.0) are on v1beta.
     client_v1 = genai.Client(api_key=api_key, http_options={'api_version': 'v1'})
     client_v1beta = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
+
+# Configure Groq (fallback for rate-limited Gemini calls)
+groq_api_key = os.getenv("GROQ_API_KEY")
+if not groq_api_key:
+    print("WARNING: GROQ_API_KEY not found in .env — Groq fallback will be unavailable.")
+    groq_client = None
+else:
+    groq_client = Groq(api_key=groq_api_key)
 
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
@@ -298,35 +307,63 @@ async def predict_salary(data: SalaryData):
 
 @app.post("/mock-interview")
 async def mock_interview(payload: InterviewPayload):
+    system_prompt = (
+        f"You are Priya, a senior hiring manager conducting a mock interview for the role of '{payload.job_role}'. "
+        "Rules you MUST follow:\n"
+        "1. Never use placeholders like [Company Name] or [Your Name]. You work at a well-known tech company.\n"
+        "2. Be conversational, warm, and professional — like a real interviewer.\n"
+        "3. Ask only ONE question at a time. Wait for the candidate's response before moving on.\n"
+        "4. Keep your responses concise (2-4 sentences max) unless giving feedback.\n"
+        "5. Ask a mix of behavioral, technical, and situational questions relevant to the role.\n"
+        "6. If the candidate gives a weak answer, gently probe deeper or offer constructive hints.\n"
+        "7. After 5-6 exchanges, wrap up the interview naturally and provide brief feedback on their performance.\n"
+        "8. Never break character. You are the interviewer, not an AI assistant.\n"
+    )
+
+    # Build the conversation for context
+    history_text = ""
+    for msg in payload.history:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        history_text += f"{role}: {content}\n"
+
+    prompt = f"{system_prompt}\n\nConversation so far:\n{history_text}\nCandidate: {payload.message}\n\nPriya:"
+
+    # --- Primary: Gemini ---
     try:
-        system_prompt = (
-            f"You are Priya, a senior hiring manager conducting a mock interview for the role of '{payload.job_role}'. "
-            "Rules you MUST follow:\n"
-            "1. Never use placeholders like [Company Name] or [Your Name]. You work at a well-known tech company.\n"
-            "2. Be conversational, warm, and professional — like a real interviewer.\n"
-            "3. Ask only ONE question at a time. Wait for the candidate's response before moving on.\n"
-            "4. Keep your responses concise (2-4 sentences max) unless giving feedback.\n"
-            "5. Ask a mix of behavioral, technical, and situational questions relevant to the role.\n"
-            "6. If the candidate gives a weak answer, gently probe deeper or offer constructive hints.\n"
-            "7. After 5-6 exchanges, wrap up the interview naturally and provide brief feedback on their performance.\n"
-            "8. Never break character. You are the interviewer, not an AI assistant.\n"
-        )
-
-        # Build the conversation for context
-        history_text = ""
-        for msg in payload.history:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            history_text += f"{role}: {content}\n"
-
-        prompt = f"{system_prompt}\n\nConversation so far:\n{history_text}\nCandidate: {payload.message}\n\nPriya:"
         ai_response = await call_gemini(prompt)
         return {"reply": ai_response}
-    except HTTPException:
-        raise
+    except HTTPException as he:
+        # Only fall back to Groq on 429 (rate-limit / resource exhausted)
+        if he.status_code != 429:
+            raise
+        print("Gemini 429 — falling back to Groq llama3-8b-8192")
     except Exception as e:
-        print(f"Mock interview error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Interviewer unavailable: {str(e)}")
+        print(f"Mock interview Gemini error: {str(e)}")
+        # If the error looks like a rate-limit, try Groq; otherwise re-raise
+        if "429" not in str(e) and "ResourceExhausted" not in str(e):
+            raise HTTPException(status_code=500, detail=f"Interviewer unavailable: {str(e)}")
+        print("Gemini ResourceExhausted — falling back to Groq llama3-8b-8192")
+
+    # --- Fallback: Groq ---
+    if not groq_client:
+        raise HTTPException(
+            status_code=429,
+            detail="All AI models are over capacity and Groq fallback is not configured. Please try again later."
+        )
+
+    try:
+        groq_response = groq_client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return {"reply": groq_response.choices[0].message.content}
+    except Exception as e:
+        print(f"Groq fallback error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Interviewer unavailable (Groq fallback also failed): {str(e)}")
 
 # ── Chat Session Endpoints ──
 
