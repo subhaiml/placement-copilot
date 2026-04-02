@@ -62,10 +62,10 @@ async def ai_health_check():
                 print(f"Gemini -> {m_id}: [{tag}]")
         if groq_client:
             try:
-                groq_client.chat.completions.create(model="llama3-8b-8192", messages=[{"role": "user", "content": "Hi"}], max_tokens=5)
-                print(f"Groq  -> llama3-8b-8192: [SUCCESS]")
+                groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": "Hi"}], max_tokens=5)
+                print(f"Groq  -> llama-3.1-8b-instant: [SUCCESS]")
             except Exception as e:
-                print(f"Groq  -> llama3-8b-8192: [ERROR] {str(e)[:80]}")
+                print(f"Groq  -> llama-3.1-8b-instant: [ERROR] {str(e)[:80]}")
         else:
             print("Groq  -> [NOT CONFIGURED]")
         print("--- [AI HEALTH CHECK] COMPLETED ---\n")
@@ -176,7 +176,7 @@ async def call_gemini(prompt: str, model_name: str = "gemini-2.0-flash"):
 
 
 async def _call_groq_fallback(prompt: str) -> str:
-    """Call Groq llama3-8b-8192 as a fallback when Gemini is unavailable."""
+    """Call Groq llama-3.1-8b-instant as a fallback when Gemini is unavailable."""
     if not groq_client:
         raise HTTPException(
             status_code=429,
@@ -184,7 +184,7 @@ async def _call_groq_fallback(prompt: str) -> str:
         )
     try:
         groq_response = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
         )
         text = groq_response.choices[0].message.content
